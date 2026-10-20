@@ -1,0 +1,43 @@
+services:
+  telegram-photos:
+    build:
+      context: .
+    image: local/telegram-to-immich:0.2.0
+    restart: unless-stopped
+    user: "${APP_UID:-1028}:${APP_GID:-1028}"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8213}:8080"
+    environment:
+      APP_PASSWORD: ${APP_PASSWORD:?Set a unique application password}
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:8213}
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
+      IMMICH_URL: ${IMMICH_URL:-}
+      IMMICH_API_KEY: ${IMMICH_API_KEY:-}
+      DRY_RUN: ${DRY_RUN:-true}
+      STATE_DIR: /state
+      PHOTOS_DIR: /photos
+      TZ: Europe/Moscow
+    volumes:
+      - type: bind
+        source: ${STATE_PATH:-./state}
+        target: /state
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PHOTOS_PATH:-./photos}
+        target: /photos
+        bind:
+          create_host_path: false
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"

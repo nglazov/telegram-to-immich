@@ -1,0 +1,12 @@
+# Only runtime source and pinned requirements are sent to the builder.
+**
+!Dockerfile
+!requirements.txt
+!telegram_photos/
+telegram_photos/**
+!telegram_photos/*.py
+!telegram_photos/static/
+telegram_photos/static/**
+!telegram_photos/static/*.html
+!telegram_photos/static/*.js
+!telegram_photos/static/*.css

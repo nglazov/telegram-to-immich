@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Фото из чатов</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="brand"><span class="mark" aria-hidden="true">↗</span><div><h1>Фото из чатов</h1><p>Telegram → локальная папка → Immich</p></div></div>
+      <button id="logout" class="quiet" hidden>Выйти</button>
+    </header>
+    <div id="notice" role="status" hidden></div>
+    <section id="login-panel" class="card narrow">
+      <p class="eyebrow">ВАША ФОТОТЕКА</p>
+      <h2>Всё начинается с хороших кадров</h2>
+      <p>Сначала проверьте, какие фото и видео есть в чатах. Скачивание запускается отдельно; Immich подключается по желанию.</p>
+      <form id="login-form">
+        <label>Пароль приложения<input name="password" type="password" autocomplete="current-password" required></label>
+        <button type="submit">Войти</button>
+      </form>
+    </section>
+    <div id="workspace" hidden>
+      <section class="hero">
+        <div><p class="eyebrow">ИМПОРТ ФОТОГРАФИЙ</p><h2>Из разговоров — в воспоминания.</h2>
+          <p>Начните с проверки без скачивания. Сохраняйте фото и видео локально или отправляйте в Immich.</p></div>
+        <a id="open-immich" class="button secondary" target="_blank" rel="noopener noreferrer">Открыть Immich ↗</a>
+      </section>
+      <nav aria-label="Разделы"><button data-tab="import" class="active">Загрузка</button><button data-tab="settings">Подключения</button></nav>
+      <div id="tab-import">
+        <section class="stats" aria-label="Статистика">
+          <div><strong id="downloaded">0</strong><span>скачано из Telegram</span></div>
+          <div><strong id="uploaded">0</strong><span>загружено в Immich</span></div>
+          <div><strong id="pending">0</strong><span id="pending-label">хранятся только локально</span></div>
+        </section>
+        <section class="card">
+          <div class="row"><div><h3>Проверка и загрузка</h3><p id="phase">Ожидание</p></div>
+            <div class="actions"><button id="sync">Проверить без скачивания</button><button id="stop" class="secondary" hidden>Остановить</button></div></div>
+          <label>Режим запуска
+            <select id="run-mode">
+              <option value="preview">Dry run — проверить без скачивания</option>
+              <option value="download">Скачать только в локальную папку</option>
+              <option value="import">Скачать и отправить в Immich</option>
+            </select>
+          </label>
+          <p id="mode-help" class="muted">Файлы не скачиваются. История импорта не меняется. Запросов в Immich не будет.</p>
+          <p class="muted">Фото и видео · отправка файлами · галереи · GIF · видеокружки · Live Photo. Остальные типы сообщений перечисляются в отчёте о пропусках.</p>
+          <p id="photos-path" class="muted"></p>
+          <p id="job-error" class="error" hidden></p>
+          <p id="last-finished" class="muted"></p>
+          <form id="schedule-form" class="schedule">
+            <label class="check"><input name="enabled" type="checkbox">Запускать по расписанию</label>
+            <label>Режим расписания<select name="mode">
+              <option value="preview">Dry run</option>
+              <option value="download">Скачать локально</option>
+              <option value="import">Скачать и отправить в Immich</option>
+            </select></label>
+            <label class="inline">Каждые <input name="interval" type="number" value="30" min="5" max="1440"> минут</label>
+            <button class="quiet" type="submit">Сохранить</button>
+          </form>
+        </section>
+        <section id="preview-panel" class="card" hidden>
+          <h3>Результат dry run</h3>
+          <p id="preview-state"></p>
+          <div id="preview-results"></div>
+          <p class="muted">Подсчитываются фото, видео, GIF и видеокружки, в том числе отправленные файлами. Каждый элемент галереи учитывается отдельно; Live Photo — как фото и короткое видео. Совпадения определяются при скачивании. Объём — по метаданным, без загрузки файлов.</p>
+        </section>
+        <section class="card">
+          <div class="row"><div><h3>Чаты и темы</h3><p>Отметьте нужные чаты. В супергруппе раскройте «Темы» и выберите нужные. Пустая дата «по» включает новые фото и видео.</p></div><button id="refresh-chats" class="secondary">Обновить список</button></div>
+          <label class="search">Найти чат или тему<input id="chat-search" type="search" placeholder="Название группы, канала или темы"></label>
+          <form id="chats-form">
+            <div id="chats" class="chats"><p class="empty">Подключите Telegram и обновите список чатов.</p></div>
+            <button type="submit" id="save-chats">Сохранить выбор и даты</button>
+          </form>
+          <p class="muted">Даты — по московскому времени, обе границы включены. Чаты с запретом сохранения не импортируются.</p>
+        </section>
+        <section class="card">
+          <h3>Последние фото и видео</h3>
+          <p>Скачанные файлы можно открыть прямо здесь. Отбор по людям доступен после отправки в Immich.</p>
+          <div id="recent" class="recent"><p class="empty">Пока нет загруженных файлов.</p></div>
+        </section>
+      </div>
+      <div id="tab-settings" hidden>
+        <section class="card">
+          <div class="row"><div><h3>Настройки из .env</h3><p>Ключи задаются в файле .env приложения. После изменения нажмите «Перечитать .env».</p></div>
+          <button id="reload-config" class="secondary">Перечитать .env</button></div>
+          <p class="muted">APP_PASSWORD — пароль входа; TELEGRAM_API_ID и TELEGRAM_API_HASH — Telegram; IMMICH_URL и IMMICH_API_KEY — необязательный Immich. DRY_RUN=true выбирает проверку при открытии страницы. Изменение пароля приложения требует перезапуска.</p>
+        </section>
+        <div class="settings-grid">
+          <section class="card">
+            <p class="eyebrow">01 / TELEGRAM</p><h3>Ваш аккаунт Telegram</h3><p id="telegram-state">Не подключён</p>
+            <p id="telegram-env-state"></p>
+            <p>Получите <strong>api_id</strong> и <strong>api_hash</strong> в <a href="https://my.telegram.org/apps" target="_blank" rel="noopener noreferrer">API development tools ↗</a> и заполните TELEGRAM_API_ID и TELEGRAM_API_HASH в .env.</p>
+            <form id="phone-form">
+              <label>Номер телефона<input name="phone" type="tel" placeholder="+7…" autocomplete="tel" required pattern="\+[0-9]{7,15}"></label>
+              <button type="submit">Получить код</button>
+            </form>
+            <form id="code-form" hidden>
+              <label>Код входа из Telegram<input name="code" inputmode="numeric" autocomplete="one-time-code" required></label>
+              <button type="submit">Подтвердить код</button>
+            </form>
+            <form id="password-form" hidden>
+              <label>Пароль двухэтапной аутентификации<input name="password" type="password" autocomplete="off" required></label>
+              <button type="submit">Подключить Telegram</button>
+            </form>
+            <button id="disconnect-telegram" class="quiet" hidden>Отключить Telegram</button>
+            <p class="muted">Код и пароль 2FA не сохраняются. Сессия остаётся на вашем сервере для последующих загрузок.</p>
+          </section>
+          <section class="card">
+            <p class="eyebrow">02 / IMMICH · НЕОБЯЗАТЕЛЬНО</p><h3>Отправка в Immich</h3><p id="immich-state">Не подключён</p>
+            <p>Без Immich доступны dry run и скачивание в локальную папку. Для отправки заполните IMMICH_URL и IMMICH_API_KEY в .env.</p>
+            <p id="immich-address" class="muted"></p>
+            <button id="check-immich" class="secondary">Проверить подключение</button>
+            <p class="muted">Права ключа: user.read, asset.upload, album.read, album.create, albumAsset.create. Приложению не нужны права удаления и доступа к людям.</p>
+            <aside>Альбомы создаются по чатам. Уже импортированные файлы не загружаются повторно, даже если позже вы удалите их в Immich.</aside>
+          </section>
+        </div>
+      </div>
+      <footer>Фотографии и сессия хранятся на машине, где запущено приложение. Распознавание при необходимости выполняет Immich.</footer>
+    </div>
+  </main>
+</body>
+</html>

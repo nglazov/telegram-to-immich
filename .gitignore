@@ -1,0 +1,34 @@
+# Credentials and local environment files (only the empty template is public).
+.env*
+*.env
+*.env.*
+!.env.example
+*.pem
+*.key
+
+# Telegram authorization, chat history, downloaded media and backups.
+state/
+photos/
+docker-data/
+artifacts/
+backups/
+*.session*
+*.sqlite*
+*.db
+*.db-*
+*.bak
+*.log
+*.pid
+
+# Local development files.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage*
+htmlcov/
+.DS_Store
+.idea/
+.vscode/
