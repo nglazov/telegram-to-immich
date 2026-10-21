@@ -13,13 +13,14 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from telethon import errors
 
+from .calendar import day_map
 from .config import ENV_FILE, Config, migrate_credentials
 from .store import Store
 from .worker import MOSCOW, Worker, safe_error
@@ -206,11 +207,23 @@ def make_app(state_dir=None, photos_dir=None, password=None, config=None, env_fi
         store, worker = app.state.store, app.state.worker
         return {
             "busy": worker.busy, "phase": worker.phase, "error": worker.error,
+            "telegram_retry_after": store.get("telegram_retry_after", 0),
+            "telegram_wait": store.get("telegram_wait"),
+            "telegram_download_delay": worker.config.telegram_download_delay,
+            "deferred_count": store.one("SELECT COUNT(*) n FROM deferred")["n"],
+            "takeout_retry_after": store.get("takeout_retry_after", 0),
+            "takeout_wait": store.get("takeout_wait"),
+            "takeout_error": store.get("takeout_error"),
+            "telegram_premium": store.get("telegram_premium"),
+            "current_transfer": worker.current,
+            "takeout_active": worker.takeout_active,
+            "telegram_takeout": worker.config.telegram_takeout,
             "last_finished": worker.last_finished,
             "telegram_configured": worker.config.telegram_configured,
             "telegram_connected": store.get("telegram_connected", False),
             "immich_configured": worker.config.immich_configured,
             "immich_url": worker.config.immich_url,
+            "immich_public_url": worker.config.immich_public_url or worker.config.immich_url.removesuffix("/api"),
             "immich_account": store.get("immich_account") if worker.immich_verified else None,
             "default_mode": "preview" if worker.config.dry_run else "download",
             "mode": worker.mode, "report": worker.report,
@@ -384,6 +397,11 @@ def make_app(state_dir=None, photos_dir=None, password=None, config=None, env_fi
                     "UPDATE chats SET selected=?,since=?,until_date=?,cursor=?,topic_ids=? WHERE id=?",
                     (item.selected, since, until, cursor, topic_ids, item.id),
                 )
+                if changed:
+                    store.db.execute(
+                        "UPDATE chats SET scan_start_day=NULL,scanned_before=NULL,checked_at=NULL WHERE id=?",
+                        (item.id,),
+                    )
         return {"ok": True}
 
     @app.post("/api/schedule")
@@ -426,6 +444,35 @@ def make_app(state_dir=None, photos_dir=None, password=None, config=None, env_fi
             FROM sources s JOIN chats c ON c.id=s.chat_id JOIN media m ON m.id=s.media_id
             ORDER BY s.sent_at DESC LIMIT 50
         """)
+
+    @app.get("/api/calendar")
+    async def calendar():
+        return day_map(app.state.store, app.state.worker.current)
+
+    @app.get("/api/files")
+    async def files(
+        status: Literal["all", "pending", "uploaded", "album_pending", "error"] = "all",
+        q: str = Query(default="", max_length=200),
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=50, ge=1, le=100),
+    ):
+        return app.state.store.inventory(status=status, query=q.strip(), offset=offset, limit=limit)
+
+    @app.get("/api/deferred")
+    async def deferred():
+        return app.state.store.deferred_files()
+
+    @app.post("/api/deferred/{deferred_id}/retry")
+    async def retry_deferred(deferred_id: int, body: Run):
+        store, worker = app.state.store, app.state.worker
+        if worker.busy or worker.auth_lock.locked():
+            raise HTTPException(409, "Остановите текущую загрузку перед повтором отложенного файла.")
+        if not store.get("telegram_connected"):
+            raise ValueError("Сначала подключите Telegram.")
+        if not store.one("SELECT 1 FROM deferred WHERE id=?", (deferred_id,)):
+            raise HTTPException(404, "Отложенный файл не найден.")
+        worker.start(body.mode, deferred_id=deferred_id)
+        return {"ok": True, "mode": body.mode}
 
     @app.get("/api/media/{media_id}")
     async def local_media(media_id: str):

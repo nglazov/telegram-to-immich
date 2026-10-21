@@ -1,4 +1,5 @@
 import os
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,8 +19,11 @@ class Config:
     telegram_api_id: int | None = None
     telegram_api_hash: str = field(default="", repr=False)
     immich_url: str = ""
+    immich_public_url: str = ""
     immich_api_key: str = field(default="", repr=False)
     dry_run: bool = True
+    telegram_takeout: bool = True
+    telegram_download_delay: float = 3
 
     @property
     def telegram_configured(self):
@@ -40,17 +44,30 @@ class Config:
         if app_hash and not re.fullmatch(r"[a-fA-F0-9]{32}", app_hash):
             raise ValueError("TELEGRAM_API_HASH должен содержать 32 шестнадцатеричных символа.")
         url = (values.get("IMMICH_URL") or "").strip()
+        public_url = (values.get("IMMICH_PUBLIC_URL") or "").strip()
         dry_run = (values.get("DRY_RUN") or "true").lower()
         if dry_run not in {"true", "false", "1", "0"}:
             raise ValueError("DRY_RUN должен быть true или false.")
+        takeout = (values.get("TELEGRAM_TAKEOUT") or "true").lower()
+        if takeout not in {"true", "false", "1", "0"}:
+            raise ValueError("TELEGRAM_TAKEOUT должен быть true или false.")
+        try:
+            delay = float(values.get("TELEGRAM_DOWNLOAD_DELAY_SECONDS") or "3")
+        except ValueError:
+            raise ValueError("TELEGRAM_DOWNLOAD_DELAY_SECONDS должен быть числом от 0 до 300.") from None
+        if not math.isfinite(delay) or not 0 <= delay <= 300:
+            raise ValueError("TELEGRAM_DOWNLOAD_DELAY_SECONDS должен быть числом от 0 до 300.")
         return cls(
             app_password=values.get("APP_PASSWORD") or "",
             app_origin=(values.get("APP_ORIGIN") or "").rstrip("/"),
             telegram_api_id=int(app_id) if app_id else None,
             telegram_api_hash=app_hash,
             immich_url=api_url(url) if url else "",
+            immich_public_url=api_url(public_url).removesuffix("/api") if public_url else "",
             immich_api_key=values.get("IMMICH_API_KEY") or "",
             dry_run=dry_run in {"true", "1"},
+            telegram_takeout=takeout in {"true", "1"},
+            telegram_download_delay=delay,
         )
 
 

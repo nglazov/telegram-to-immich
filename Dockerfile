@@ -4,6 +4,9 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \
     && groupadd -g 1028 photos && useradd -u 1028 -g photos --no-create-home photos
 COPY telegram_photos ./telegram_photos
+# Source archives can create parent directories with a restrictive umask.
+# Runtime code and static assets must be readable by the non-root app user.
+RUN chmod -R a+rX /app/telegram_photos
 ENV STATE_DIR=/state PHOTOS_DIR=/photos PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 USER 1028:1028
 EXPOSE 8080

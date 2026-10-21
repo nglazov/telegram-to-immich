@@ -29,7 +29,30 @@
           <p>Начните с проверки без скачивания. Сохраняйте фото и видео локально или отправляйте в Immich.</p></div>
         <a id="open-immich" class="button secondary" target="_blank" rel="noopener noreferrer">Открыть Immich ↗</a>
       </section>
-      <nav aria-label="Разделы"><button data-tab="import" class="active">Загрузка</button><button data-tab="settings">Подключения</button></nav>
+      <nav aria-label="Разделы"><button data-tab="import" class="active">Загрузка</button><button data-tab="files">Журнал файлов</button><button data-tab="settings">Подключения</button></nav>
+      <section id="transfer-panel" class="card transfer-panel" aria-label="Текущий статус выгрузки">
+        <div class="row"><div><p class="eyebrow">ТЕКУЩИЙ СТАТУС</p><h3 id="transfer-title">Ожидание</h3></div>
+          <button id="progress-stop" class="secondary" hidden>Остановить</button></div>
+        <p id="transfer-wait" role="status"></p>
+        <p id="transfer-export" class="muted"></p>
+        <p id="transfer-file" class="muted"></p>
+        <progress id="transfer-bytes" max="100" value="0" hidden aria-label="Скачивание текущего файла"></progress>
+        <p id="transfer-total" class="muted"></p>
+      </section>
+      <details id="calendar-panel" class="card" open>
+        <summary>Карта дней</summary>
+        <div class="row calendar-heading"><label>Чат<select id="calendar-chat" aria-label="Чат на карте дней"></select></label>
+          <p class="muted">Даты сообщений · московское время</p></div>
+        <div class="calendar-legend">
+          <span class="legend complete">Проверен, файлы в Immich</span><span class="legend active">Обрабатывается</span>
+          <span class="legend pending">Есть незавершённые файлы</span><span class="legend saved">Есть файлы, полнота неизвестна</span>
+          <span class="legend empty">Проверен, вложений нет</span><span class="legend unknown">Ещё не проверен</span>
+          <span class="legend error">Ошибка отправки</span>
+        </div>
+        <p id="calendar-detail" role="status"></p>
+        <div id="calendar-months" class="calendar-months"></div>
+        <p id="calendar-note" class="muted">Одна ячейка — день. Нажмите, чтобы увидеть количество скачанных и отправленных вложений. Старые записи не доказывают полноту дня. Счётчики включают сохранённые вложения чата; проверка относится к выбранным темам.</p>
+      </details>
       <div id="tab-import">
         <section class="stats" aria-label="Статистика">
           <div><strong id="downloaded">0</strong><span>скачано из Telegram</span></div>
@@ -83,11 +106,44 @@
           <div id="recent" class="recent"><p class="empty">Пока нет загруженных файлов.</p></div>
         </section>
       </div>
+      <div id="tab-files" hidden>
+        <section class="card" id="deferred-panel" hidden>
+          <h3>Отложены для повторного скачивания</h3>
+          <p>Эти вложения ещё не скачаны. Основная очередь продолжает работу без них. Для отдельной попытки остановите текущую загрузку и нажмите «Повторить».</p>
+          <p id="deferred-summary" role="status"></p>
+          <div id="deferred-list"></div>
+        </section>
+        <section class="card">
+          <h3>Журнал скачанных файлов</h3>
+          <p>Одна строка — один уникальный файл. Повторения в сообщениях собраны в его источниках. При расширении периода уже обработанные сообщения пропускаются.</p>
+          <p id="files-summary" role="status"></p>
+          <form id="files-filter" class="file-filters">
+            <label>Поиск по чату, сообщению или имени файла<input name="q" type="search" maxlength="200" placeholder="Название чата или номер сообщения"></label>
+            <label>Статус<select name="status">
+              <option value="all">Все файлы</option>
+              <option value="pending">Ожидают отправки</option>
+              <option value="uploaded">В Immich и альбоме</option>
+              <option value="album_pending">В Immich, ожидают альбом</option>
+              <option value="error">Ошибка отправки</option>
+            </select></label>
+            <button type="submit" class="secondary">Показать</button>
+          </form>
+          <div class="file-table-wrap">
+            <table class="file-table">
+              <thead><tr><th scope="col">Файл и источники</th><th scope="col">Размер</th><th scope="col">Даты обработки</th><th scope="col">Статус</th></tr></thead>
+              <tbody id="files-list"></tbody>
+            </table>
+          </div>
+          <p id="files-empty" class="empty" hidden>Файлы не найдены.</p>
+          <div class="file-pages"><button id="files-prev" class="quiet">Назад</button><span id="files-page" aria-live="polite"></span><button id="files-next" class="quiet">Далее</button></div>
+          <p class="muted">Журнал сохраняется после перезапуска. Даты скачивания и отправки старых файлов могут быть неизвестны: раньше они не записывались. При ошибке файл остаётся на диске; следующий запуск импорта повторит отправку.</p>
+        </section>
+      </div>
       <div id="tab-settings" hidden>
         <section class="card">
           <div class="row"><div><h3>Настройки из .env</h3><p>Ключи задаются в файле .env приложения. После изменения нажмите «Перечитать .env».</p></div>
           <button id="reload-config" class="secondary">Перечитать .env</button></div>
-          <p class="muted">APP_PASSWORD — пароль входа; TELEGRAM_API_ID и TELEGRAM_API_HASH — Telegram; IMMICH_URL и IMMICH_API_KEY — необязательный Immich. DRY_RUN=true выбирает проверку при открытии страницы. Изменение пароля приложения требует перезапуска.</p>
+          <p class="muted">APP_PASSWORD — пароль входа; TELEGRAM_API_ID и TELEGRAM_API_HASH — Telegram; IMMICH_URL и IMMICH_API_KEY — необязательный Immich. TELEGRAM_DOWNLOAD_DELAY_SECONDS — пауза между скачиваниями, по умолчанию 3 секунды. DRY_RUN=true выбирает проверку при открытии страницы. Изменение пароля приложения требует перезапуска.</p>
         </section>
         <div class="settings-grid">
           <section class="card">

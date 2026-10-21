@@ -3,3 +3,32 @@
 @media(max-width:720px){main{padding:22px 16px}.hero{display:block;padding-top:34px}.hero .button{margin-top:20px}.hero h2{font-size:28px}.settings-grid{grid-template-columns:1fr}.card{padding:20px}.stats{gap:4px}.stats div{padding:10px 12px}.stats strong{font-size:26px}.stats span{font-size:10px}.row{align-items:flex-start;flex-wrap:wrap}.chat{grid-template-columns:1fr 1fr;gap:10px}.chat-title{grid-column:1/-1}.recent-row{grid-template-columns:1fr 120px}.recent-row .badge{grid-column:1/-1;text-align:left}.narrow{margin-top:40px}h2{font-size:28px}}
 select{display:block;max-width:100%;padding:11px 12px;font:inherit;font-weight:400;font-size:14px;color:#253f3b;border:1px solid var(--border);background:#fbfcfa;border-radius:8px;margin-top:6px}select:focus{outline:2px solid #9ebbb0;outline-offset:1px}.preview-row{display:grid;gap:4px;padding:14px 0;border-top:1px solid var(--border);font-size:13px}.preview-row .muted{margin:0}#photos-path{overflow-wrap:anywhere}.schedule>label{margin-bottom:0}
 .topics{grid-column:1/-1;border:0;border-left:2px solid var(--border);margin-left:8px;padding:0 0 0 17px}.topics summary{margin:0 0 12px;color:var(--green)}.topics p{margin:8px 0 12px}.topic-list{display:grid;gap:10px}.topic-list .check{font-weight:400}.topics input[type=checkbox]{flex-shrink:0}
+.file-filters{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;margin-bottom:22px}.file-filters label{margin:0;flex:1;min-width:190px}.file-filters label:first-child{flex:2}.file-filters select{width:100%}.file-table-wrap{overflow:auto}.file-table{width:100%;min-width:700px;border-collapse:collapse;font-size:12px;text-align:left}.file-table th{font-weight:600;color:var(--muted);padding:12px 10px;border-bottom:1px solid var(--border)}.file-table td{padding:16px 10px;vertical-align:top;border-bottom:1px solid #eef1ed}.file-table td:first-child{width:40%;max-width:350px}.file-name{overflow-wrap:anywhere}.file-table details{border:0;padding:0}.file-table summary{margin:8px 0;font-size:12px}.file-table details div{margin:6px 0;overflow-wrap:anywhere;color:var(--muted)}.file-table td:last-child a{display:block;margin-top:8px}.file-pages{display:flex;align-items:center;justify-content:center;gap:20px;margin-top:20px;font-size:13px}#files-summary{color:var(--green)}
+@media(max-width:720px){.file-table{min-width:0}.file-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}.file-table tr{display:grid;grid-template-columns:1fr auto;border-top:1px solid var(--border);padding:14px 0;gap:8px}.file-table td{padding:0;border:0}.file-table td:first-child{width:auto;max-width:none;grid-column:1}.file-table td:nth-child(2){grid-column:2;text-align:right}.file-table td:nth-child(3),.file-table td:nth-child(4){grid-column:1/-1}.file-table td:last-child{font-weight:600;color:var(--green)}}
+
+.transfer-panel {border-left: 4px solid #27634c}
+.transfer-panel.waiting {border-left-color: #bd7817; background: #fffaf0}
+.transfer-panel p:empty {display: none}
+.transfer-panel progress {width: 100%; height: 9px; accent-color: #27634c}
+#calendar-panel > summary {font-size: 18px; font-weight: 650; cursor: pointer}
+.calendar-heading {margin-top: 16px}
+.calendar-heading label {min-width: 260px; max-width: 100%}
+.calendar-legend {display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 12px; margin: 18px 0}
+.legend {display: inline-flex; align-items: center; gap: 6px}
+.legend::before {content: ""; width: 12px; height: 12px; background: var(--day-bg); border: 1px solid var(--day-border, transparent); border-radius: 3px}
+.complete {--day-bg: #267457; --day-fg: #fff}
+.active {--day-bg: #d68b23; --day-fg: #231907}
+.pending {--day-bg: #a8c8f0; --day-fg: #153d64}
+.saved {--day-bg: #b9d8ca; --day-fg: #173e2e}
+.empty {--day-bg: #fff; --day-fg: #59645d; --day-border: #879c8b}
+.unknown {--day-bg: #edf0ed; --day-fg: #67716a}
+.error {--day-bg: #f1c1bd; --day-fg: #70261e}
+.calendar-months {display: grid; grid-template-columns: repeat(auto-fit, minmax(205px, 1fr)); gap: 20px; max-height: 480px; overflow: auto; padding: 4px}
+.calendar-month h4 {font-size: 14px; margin: 4px 0 10px; text-transform: capitalize}
+.calendar-grid {display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px}
+.calendar-grid .weekday {font-size: 11px; text-align: center; color: #69766b}
+.calendar-day {padding: 0; min-height: 27px; border-radius: 4px; font-size: 12px; background: var(--day-bg); color: var(--day-fg); border: 1px solid var(--day-border, transparent)}
+.calendar-day:hover {filter: brightness(.94)}
+.calendar-day[aria-pressed=true] {outline: 2px solid #173e2e; outline-offset: 1px}
+#calendar-detail {font-size: 13px; min-height: 38px}
+@media (max-width: 600px) {.calendar-months {grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px} .calendar-heading label {min-width: 0; width: 100%} .calendar-day {font-size: 11px; min-height: 24px} .calendar-grid {gap: 2px}}

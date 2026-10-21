@@ -1,13 +1,14 @@
+import asyncio
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
-from telethon import errors
+from telethon import TelegramClient, errors, functions
 from telethon.tl import types as tg
 from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto, MessageReplyHeader, Photo
 
@@ -25,7 +26,7 @@ TEST_PASSWORD = "local-test-password-only"
 @pytest.fixture
 def worker(tmp_path):
     store = Store(tmp_path / "state")
-    result = Worker(store, tmp_path / "state", tmp_path / "photos")
+    result = Worker(store, tmp_path / "state", tmp_path / "photos", Config(telegram_takeout=False, telegram_download_delay=0))
     yield result
     store.db.close()
 
@@ -65,7 +66,7 @@ class TelegramFake:
                 if count == kwargs.get("limit"):
                     break
 
-    async def download_media(self, msg, file):
+    async def download_media(self, msg, file, progress_callback=None):
         self.downloaded.append(msg.id)
         Path(file).write_bytes(msg.payload)
         if msg.id == self.fail_id:
@@ -152,6 +153,96 @@ async def test_history_continues_past_one_batch(worker, monkeypatch):
     assert [c["min_id"] for c in client.calls] == [0, 1000]
 
 
+@pytest.mark.parametrize("import_files", [False, True])
+async def test_each_file_is_uploaded_before_next_download_only_in_import_mode(worker, monkeypatch, import_files):
+    add_chat(worker)
+    client = TelegramFake([message(n, payload=str(n).encode()) for n in range(1, 27)])
+    monkeypatch.setattr(worker, "authorized", AsyncMock(return_value=client))
+    batches = []
+    download = client.download_media
+
+    async def download_with_phase(msg, file, **kwargs):
+        assert worker.phase.startswith("Скачивание:")
+        if import_files:
+            assert batches == list(range(1, msg.id))
+        return await download(msg, file)
+
+    async def upload():
+        worker.phase = "Загрузка в Immich"
+        batches.append(len(client.downloaded))
+
+    client.download_media = download_with_phase
+    monkeypatch.setattr(worker, "upload", upload)
+    await worker.download(upload_to_immich=import_files)
+    assert batches == (list(range(1, 27)) + [26] if import_files else [])
+    assert worker.store.one("SELECT cursor FROM chats")["cursor"] == 26
+    assert len(worker.store.rows("SELECT * FROM sources")) == 26
+
+
+async def test_only_complete_files_are_sent_to_immich(worker, monkeypatch):
+    add_chat(worker)
+    client = TelegramFake([message(n, payload=str(n).encode()) for n in range(1, 4)])
+    monkeypatch.setattr(worker, "authorized", AsyncMock(return_value=client))
+    batches = []
+
+    async def upload():
+        assert not list((worker.photos / ".partial").iterdir())
+        assert len(worker.store.rows("SELECT * FROM media")) == len(client.downloaded)
+        batches.append(len(client.downloaded))
+
+    monkeypatch.setattr(worker, "upload", upload)
+    await worker.download(upload_to_immich=True)
+    assert batches == [1, 2, 3, 3]
+
+
+@pytest.mark.parametrize("mode", ["preview", "download", "import"])
+async def test_existing_queue_is_sent_before_telegram_only_in_import_mode(worker, monkeypatch, mode):
+    add_chat(worker)
+    await worker.download_message(TelegramFake([]), 1, message(1), ".jpg")
+    events = []
+
+    async def check():
+        events.append("check")
+
+    async def upload():
+        events.append("upload")
+        worker.store.execute("UPDATE media SET asset_id='existing-asset'")
+        worker.store.execute("UPDATE sources SET album_added=1")
+
+    async def wait_for_telegram():
+        events.append("telegram")
+        return False  # Even a Telegram cooldown must not postpone the old inbox.
+
+    monkeypatch.setattr(worker, "check_immich", check)
+    monkeypatch.setattr(worker, "upload", upload)
+    monkeypatch.setattr(worker, "wait_for_telegram", wait_for_telegram)
+    await worker.run(mode)
+    if mode == "import":
+        assert events[:3] == ["check", "upload", "telegram"]
+        assert worker.store.one("SELECT asset_id FROM media")["asset_id"] == "existing-asset"
+    else:
+        assert events == ["telegram"]
+        assert worker.store.one("SELECT asset_id FROM media")["asset_id"] is None
+
+
+async def test_stop_during_immediate_upload_preserves_cursor_and_next_file(worker, monkeypatch):
+    add_chat(worker)
+    client = TelegramFake([message(n, payload=str(n).encode()) for n in range(1, 27)])
+    monkeypatch.setattr(worker, "authorized", AsyncMock(return_value=client))
+
+    async def stop_on_upload():
+        if len(client.downloaded) == 25:
+            worker.stop = True
+
+    monkeypatch.setattr(worker, "upload", stop_on_upload)
+    await worker.download(upload_to_immich=True)
+    assert client.downloaded == list(range(1, 26))
+    assert worker.store.one("SELECT cursor FROM chats")["cursor"] == 25
+    worker.stop = False
+    await worker.download()
+    assert client.downloaded == list(range(1, 27))
+
+
 @pytest.mark.parametrize("upload_status", ["created", "duplicate"])
 async def test_upload_album_retry_never_reuploads_deleted_or_existing_asset(worker, monkeypatch, upload_status):
     add_chat(worker)
@@ -181,10 +272,13 @@ async def test_upload_album_retry_never_reuploads_deleted_or_existing_asset(work
     ))
     await worker.upload()
     assert worker.store.one("SELECT asset_id FROM media")["asset_id"] == "asset-1"
+    uploaded_at = worker.store.one("SELECT uploaded_at FROM media")["uploaded_at"]
+    assert datetime.fromisoformat(uploaded_at).tzinfo
     assert worker.store.one("SELECT album_added FROM sources")["album_added"] == 0
     album_fails = False
     await worker.upload()
     assert worker.store.one("SELECT album_added FROM sources")["album_added"] == 1
+    assert worker.store.one("SELECT uploaded_at FROM media")["uploaded_at"] == uploaded_at
     # Once imported, no probing/recreation on subsequent syncs, even if the
     # user later removes the asset in Immich.
     await worker.upload()
@@ -204,7 +298,7 @@ async def test_telegram_outage_does_not_block_pending_uploads(worker, monkeypatc
     assert worker.last_finished
 
 
-async def test_flood_wait_preserves_cursor_and_blocks_immediate_retry(worker, monkeypatch):
+async def test_flood_wait_preserves_cursor_and_remembers_cooldown(worker, monkeypatch):
     add_chat(worker)
     fake = TelegramFake([])
     fake.get_entity = AsyncMock(side_effect=errors.FloodWaitError(request=None, capture=120))
@@ -213,8 +307,6 @@ async def test_flood_wait_preserves_cursor_and_blocks_immediate_retry(worker, mo
         await worker.download()
     assert worker.store.one("SELECT cursor FROM chats")["cursor"] == 0
     assert worker.store.get("telegram_retry_after") > datetime.now(UTC).timestamp()
-    with pytest.raises(ValueError, match="ограничил"):
-        worker.start()
 
 
 @pytest.fixture
@@ -222,6 +314,7 @@ async def web(tmp_path):
     config = Config(
         app_password=TEST_PASSWORD, telegram_api_id=123, telegram_api_hash="a" * 32,
         immich_url="http://immich.test/api", immich_api_key="dummy-api-secret",
+        telegram_download_delay=0,
     )
     env_file = tmp_path / ".env"
     env_file.write_text(f"APP_PASSWORD={TEST_PASSWORD}\nTELEGRAM_API_ID=123\nTELEGRAM_API_HASH={'a' * 32}\n")
@@ -343,7 +436,7 @@ async def test_default_dry_run_changes_no_files_cursors_or_uploads(worker, monke
         candidate,
         message(4, "2026-10-20T21:00:00+00:00"),
     ])
-    worker.config = Config(immich_url="http://immich.test/api", immich_api_key="configured-but-unused")
+    worker.config = Config(immich_url="http://immich.test/api", immich_api_key="configured-but-unused", telegram_takeout=False)
     monkeypatch.setattr(worker, "authorized", AsyncMock(return_value=client))
     immich = Mock(side_effect=AssertionError("dry run must not contact Immich"))
     monkeypatch.setattr(worker, "immich", immich)
@@ -384,7 +477,7 @@ async def test_api_empty_body_defaults_to_preview_without_immich(web, monkeypatc
     app, client = web
     await sign_in(client)
     worker = app.state.worker
-    worker.config = Config()
+    worker.config = Config(telegram_takeout=False, telegram_download_delay=0)
     app.state.store.set("telegram_connected", True)
     add_chat(worker)
     run = AsyncMock()
@@ -392,7 +485,7 @@ async def test_api_empty_body_defaults_to_preview_without_immich(web, monkeypatc
     result = await client.post("/api/sync", json={})
     await worker.task
     assert result.json()["mode"] == "preview"
-    run.assert_awaited_once_with("preview")
+    run.assert_awaited_once_with("preview", deferred_id=None)
     assert (await client.post("/api/sync", json={"mode": "import"})).status_code == 400
     assert (await client.post("/api/schedule", json={"enabled": True, "interval": 30})).status_code == 200
     assert worker.store.get("schedule_mode") == "preview"
@@ -865,3 +958,216 @@ def test_media_upgrade_preserves_upload_history_and_rescans_only_once(tmp_path):
     store = Store(root)
     assert store.one("SELECT cursor FROM chats")["cursor"] == 777
     store.db.close()
+
+
+async def test_inventory_groups_sources_filters_and_paginates(web):
+    app, client = web
+    assert (await client.get("/api/files")).status_code == 401
+    await sign_in(client)
+    store = app.state.store
+    add_chat(app.state.worker)
+    store.execute("UPDATE chats SET title='Школа 100%'")
+    for i in range(4):
+        store.record(1, i + 10, str(i), f"inbox/{i}.jpg", "2025-09-01", size_bytes=10)
+    store.record(1, 99, "0", "ignored-duplicate.jpg", "2026-09-01", size_bytes=10)
+    store.execute("UPDATE media SET asset_id='asset-1' WHERE id IN ('1','2')")
+    store.execute("UPDATE sources SET album_added=1 WHERE media_id='1'")
+    store.execute("UPDATE media SET error='Ошибка сети' WHERE id='3'")
+    result = (await client.get("/api/files?limit=2")).json()
+    assert result["total"] == 4 and len(result["items"]) == 2
+    assert result["summary"] == {
+        "total": 4, "bytes": 40, "unknown_sizes": 0, "sources": 5,
+        "pending": 1, "uploaded": 1, "album_pending": 1, "errors": 1,
+    }
+    second = (await client.get("/api/files?limit=2&offset=2")).json()
+    assert {i["id"] for i in result["items"]}.isdisjoint({i["id"] for i in second["items"]})
+    for status, expected in [("pending", "0"), ("uploaded", "1"), ("album_pending", "2"), ("error", "3")]:
+        result = (await client.get("/api/files", params={"status": status})).json()
+        assert result["total"] == 1 and result["items"][0]["id"] == expected
+        assert result["summary"]["total"] == 4
+    result = (await client.get("/api/files", params={"q": "шКоЛа 100%"})).json()
+    assert result["total"] == 4
+    assert (await client.get("/api/files", params={"q": "_"})).json()["total"] == 0
+    item = (await client.get("/api/files", params={"q": "99"})).json()["items"][0]
+    assert item["id"] == "0" and len(item["sources"]) == 2
+    assert item["filename"] == "0.jpg" and "path" not in item
+    for params in [{"status": "oops"}, {"limit": 101}, {"offset": -1}, {"q": "x" * 201}]:
+        assert (await client.get("/api/files", params=params)).status_code == 422
+
+
+async def test_expanding_school_year_keeps_history_and_downloads_only_older_unseen_messages(web):
+    app, client = web
+    await sign_in(client)
+    worker = app.state.worker
+    chat = add_chat(worker, since="2026-09-01")
+    old = message(1, "2025-09-01T08:00:00+00:00", b"last-school-year")
+    current = message(2, "2026-09-01T08:00:00+00:00", b"this-school-year")
+    telegram = TelegramFake([old, current])
+    await worker.download_chat(telegram, 1, chat)
+    assert telegram.downloaded == [2]
+    original = worker.store.one("SELECT * FROM media")
+    assert original["size_bytes"] == len(current.payload)
+    assert datetime.fromisoformat(original["downloaded_at"]).tzinfo
+    worker.store.execute("UPDATE media SET asset_id='kept',uploaded_at='2026-10-20T10:00:00+00:00'")
+    response = await client.put("/api/chats", json=[{"id": 1, "selected": True, "since": "2025-09-01"}])
+    assert response.status_code == 200
+    chat = worker.store.one("SELECT * FROM chats")
+    assert chat["cursor"] == 0
+    await worker.download_chat(telegram, 1, chat)
+    assert telegram.downloaded == [2, 1]
+    assert worker.store.one("SELECT COUNT(*) count FROM media")["count"] == 2
+    known = worker.store.one("SELECT * FROM media WHERE id=?", (original["id"],))
+    assert known["asset_id"] == "kept" and known["downloaded_at"] == original["downloaded_at"]
+    assert known["uploaded_at"] == "2026-10-20T10:00:00+00:00"
+
+
+def test_inventory_migration_preserves_history_and_does_not_invent_dates(tmp_path):
+    state, photos = tmp_path / "state", tmp_path / "photos"
+    state.mkdir()
+    photos.mkdir()
+    (photos / "old.jpg").write_bytes(b"legacy")
+    with sqlite3.connect(state / "photos.sqlite3") as db:
+        db.executescript("""
+            CREATE TABLE media(id TEXT PRIMARY KEY,path TEXT NOT NULL,created_at TEXT NOT NULL,
+              asset_id TEXT,error TEXT);
+            INSERT INTO media VALUES('old','old.jpg','2025-09-01','existing-asset',NULL);
+        """)
+    store = Store(state)
+    store.execute("INSERT INTO chats(id,title,since,cursor) VALUES(1,'Old chat','2025-09-01',50)")
+    store.db.close()
+    store = Store(state)
+    Worker(store, state, photos)
+    item = store.one("SELECT * FROM media")
+    assert item["size_bytes"] == 6
+    assert item["downloaded_at"] is None and item["uploaded_at"] is None
+    assert item["asset_id"] == "existing-asset"
+    assert store.one("SELECT cursor FROM chats")["cursor"] == 50
+    store.db.close()
+    reopened = Store(state)
+    assert reopened.one("SELECT * FROM media") == item
+    assert reopened.rows("PRAGMA foreign_key_check") == []
+    reopened.db.close()
+
+
+def test_public_immich_url_is_separate_from_upload_destination(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("IMMICH_URL=http://immich-server:2283\nIMMICH_PUBLIC_URL=https://photos.example.test/\n")
+    config = Config.load(env)
+    assert config.immich_url == "http://immich-server:2283/api"
+    assert config.immich_public_url == "https://photos.example.test"
+
+
+@pytest.fixture
+def telegram_clock(monkeypatch):
+    import telegram_photos.worker as module
+
+    class Clock(datetime):
+        elapsed = 0
+        sleeps = []
+
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 10, 20, tzinfo=UTC) + timedelta(seconds=cls.elapsed)
+
+    async def sleep(seconds):
+        Clock.sleeps.append(seconds)
+        Clock.elapsed += seconds
+
+    monkeypatch.setattr(module, "datetime", Clock)
+    monkeypatch.setattr(module.asyncio, "sleep", sleep)
+    return Clock
+
+
+async def test_import_resumes_after_repeated_flood_wait_without_redownloading(worker, monkeypatch, telegram_clock):
+    add_chat(worker)
+    telegram = TelegramFake([message(1, payload=b"first"), message(2, payload=b"second")])
+    download = telegram.download_media
+    attempts = []
+
+    async def limited(msg, file, **kwargs):
+        if msg.id == 2:
+            attempts.append(telegram_clock.elapsed)
+            if len(attempts) <= 2:
+                Path(file).write_bytes(b"partial")
+                raise errors.FloodWaitError(request=None, capture=[6, 9][len(attempts) - 1])
+        return await download(msg, file)
+
+    telegram.download_media = limited
+    monkeypatch.setattr(worker, "authorized", AsyncMock(return_value=telegram))
+    monkeypatch.setattr(worker, "check_immich", AsyncMock())
+    uploaded_batches = []
+
+    async def upload():
+        uploaded_batches.append(worker.store.one("SELECT COUNT(*) count FROM media")["count"])
+
+    monkeypatch.setattr(worker, "upload", upload)
+    await worker.run("import")
+    assert attempts == [0, 30, 90]
+    assert telegram.downloaded == [1, 2]
+    assert worker.store.one("SELECT cursor FROM chats")["cursor"] == 2
+    assert len(worker.store.rows("SELECT * FROM sources")) == 2
+    assert not list((worker.photos / ".partial").iterdir())
+    assert uploaded_batches[:2] == [1, 1] and uploaded_batches[-1] == 2
+    assert worker.store.get("telegram_retry_after") == 0
+    assert not worker.error and worker.last_finished
+
+
+async def test_start_during_cooldown_waits_and_stop_keeps_deadline(worker, monkeypatch, telegram_clock):
+    deadline = telegram_clock.now(UTC).timestamp() + 3600
+    worker.store.set("telegram_retry_after", deadline)
+    download = AsyncMock()
+    monkeypatch.setattr(worker, "download", download)
+
+    async def stop_during_wait(seconds):
+        assert worker.busy and "Продолжим автоматически" in worker.phase
+        assert seconds <= 1
+        worker.stop = True
+
+    monkeypatch.setattr(asyncio, "sleep", stop_during_wait)
+    worker.start("download")
+    await worker.task
+    download.assert_not_called()
+    assert worker.phase == "Остановлено"
+    assert worker.store.get("telegram_retry_after") == deadline
+    assert not worker.store.get("auto_sync", False)
+
+
+async def test_preview_recovers_from_flood_wait_without_downloading(worker, monkeypatch, telegram_clock):
+    add_chat(worker)
+    telegram = TelegramFake([message(1)])
+    telegram.get_entity = AsyncMock(side_effect=[
+        errors.FloodWaitError(request=None, capture=7), SimpleNamespace(noforwards=False),
+    ])
+    monkeypatch.setattr(worker, "authorized", AsyncMock(return_value=telegram))
+    await worker.run("preview")
+    assert telegram_clock.elapsed == 30
+    assert worker.report["complete"] and worker.report["chats"][0]["new"] == 1
+    assert not telegram.downloaded and not worker.error
+    assert worker.store.one("SELECT cursor FROM chats")["cursor"] == 0
+
+
+async def test_short_wait_is_retried_inside_same_telegram_rpc(worker, monkeypatch, telegram_clock):
+    worker.config = Config(telegram_api_id=123, telegram_api_hash="a" * 32)
+    monkeypatch.setattr(TelegramClient, "connect", AsyncMock())
+    client = await worker.telegram()
+    worker.retry_task = asyncio.current_task()
+    sender = Mock()
+    sends = []
+
+    def send(request, **kwargs):
+        sends.append(request)
+        future = asyncio.get_running_loop().create_future()
+        if len(sends) == 1:
+            future.set_exception(errors.FloodWaitError(request=request, capture=9))
+        else:
+            future.set_result(tg.help.InviteText(message="ok"))
+        return future
+
+    monkeypatch.setattr("telethon.client.users.time.time", lambda: telegram_clock.now(UTC).timestamp())
+    sender.send.side_effect = send
+    try:
+        result = await client._call(sender, functions.help.GetConfigRequest())
+        assert result.message == "ok" and len(sends) == 2
+        assert sum(telegram_clock.sleeps) == 30
+    finally:
+        await client.disconnect()
